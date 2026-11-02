@@ -13,9 +13,13 @@
 - Basit nesneler (sınıf, interface, rapor) için XML yazılabilir. Tablo, CDS, ekran, function group gibi
   karmaşık nesneler SAP'de oluşturulup abapGit ile repoya alınmalı.
 - Mevcut XML dosyalarını gereksiz yere değiştirme.
+- Yeni nesne XML'i yazarken `src/zcl_deneme_hello.clas.xml` (SAP'den abapGit ile gelen gerçek dosya) örnek alınır.
+  Sınıf XML'inde kök etiket `<VSEOCLASS>` olmalıdır (`<VSEO_CLASS>` değil). Bu yanlışlık
+  "Invalid parameter OBJECT/OBJECTCLASS" hatasına neden olmuştu. Elle `VERSION`/`EXPOSURE` ekleme.
 
 ## Kodlama kuralları
 - İsimler `Z` ile başlar (sınıf `ZCL_`, interface `ZIF_`, rapor `Z_`).
-- Sözdizimi ABAP 7.02 uyumlu tutulur (inline declaration, `NEW`, string template yok) ta ki sistem sürümü
-  netleşene kadar. Sürüm netleşince buradan güncelle.
+- Sistem: SAP_BASIS 7.55 (SP 0002). Modern ABAP sözdizimi kullanılabilir (inline declaration, `NEW`,
+  `VALUE`, `COND`, `SWITCH`, string template, `REDUCE`, `FILTER`, CDS). 7.56/7.57 ve sonrası özellikleri
+  (ör. bazı yeni built-in fonksiyonlar, `RAISE ... EXCEPTION ... MESSAGE` varyantları) kullanılmaz.
 - Veritabanı erişiminde yetki kontrolü ve hata yönetimi unutulmaz.
