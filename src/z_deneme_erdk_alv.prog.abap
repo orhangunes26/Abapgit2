@@ -60,7 +60,7 @@ CLASS lcl_report IMPLEMENTATION.
         lo_alv->get_functions( )->set_all( abap_true ).
         lo_alv->get_columns( )->set_optimize( abap_true ).
         lo_alv->get_display_settings( )->set_striped_pattern( abap_true ).
-        lo_alv->get_display_settings( )->set_list_title( |ERDK - { lines( mt_erdk ) } records| ).
+        lo_alv->get_display_settings( )->set_list_header( |ERDK - { lines( mt_erdk ) } records| ).
 
         lo_alv->display( ).
 
