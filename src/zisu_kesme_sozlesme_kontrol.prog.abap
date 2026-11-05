@@ -46,6 +46,7 @@ TYPES: BEGIN OF ty_doc,
          status    TYPE ediscdoc-status,
          refobjkey TYPE ediscdoc-refobjkey,
          erdat     TYPE ediscdoc-erdat,
+         anlage    TYPE ever-anlage,        " ALPHA dönüşümü yapılmış tesisat
        END OF ty_doc,
        BEGIN OF ty_act,
          discno  TYPE ediscact-discno,
@@ -64,8 +65,8 @@ TYPES: BEGIN OF ty_doc,
        END OF ty_vkp.
 
 DATA: gt_doc  TYPE STANDARD TABLE OF ty_doc,
-      gt_act  TYPE STANDARD TABLE OF ty_act,
-      gt_ever TYPE STANDARD TABLE OF ty_ever,
+      gt_act  TYPE HASHED TABLE OF ty_act WITH UNIQUE KEY discno,
+      gt_ever TYPE SORTED TABLE OF ty_ever WITH NON-UNIQUE KEY anlage einzdat vertrag,
       gt_vkp  TYPE SORTED TABLE OF ty_vkp WITH NON-UNIQUE KEY vkont,
       gt_out  TYPE STANDARD TABLE OF ty_out,
       gs_out  TYPE ty_out.
@@ -84,34 +85,10 @@ PARAMETERS: p_only AS CHECKBOX DEFAULT 'X'.             " sadece fesih + yeni ab
 SELECTION-SCREEN END OF BLOCK b1.
 
 *----------------------------------------------------------------------*
-AT SELECTION-SCREEN.
-  PERFORM check_authority.
-
-*----------------------------------------------------------------------*
 START-OF-SELECTION.
   PERFORM get_data.
   PERFORM process_data.
   PERFORM show_alv.
-
-*&---------------------------------------------------------------------*
-*& Yetki kontrolü: tesisat ve sözleşme verisi için görüntüleme yetkisi
-*& DOGRULA: E_ANLAGE / E_VERTRAG yetki nesneleri ve alanları (SU21)
-*&---------------------------------------------------------------------*
-FORM check_authority.
-  AUTHORITY-CHECK OBJECT 'E_ANLAGE'
-    ID 'BEGRU' DUMMY
-    ID 'ACTVT' FIELD '03'.
-  IF sy-subrc <> 0.
-    MESSAGE 'Tesisat görüntüleme yetkiniz yok (E_ANLAGE)' TYPE 'E'.
-  ENDIF.
-
-  AUTHORITY-CHECK OBJECT 'E_VERTRAG'
-    ID 'BEGRU' DUMMY
-    ID 'ACTVT' FIELD '03'.
-  IF sy-subrc <> 0.
-    MESSAGE 'Sözleşme görüntüleme yetkiniz yok (E_VERTRAG)' TYPE 'E'.
-  ENDIF.
-ENDFORM.
 
 *&---------------------------------------------------------------------*
 FORM get_data.
@@ -119,54 +96,60 @@ FORM get_data.
   "         tutuluyorsa aşağıdaki gibi; farklıysa EDISCOBJ üzerinden alın.
   SELECT discno status refobjkey erdat
     FROM ediscdoc
-    INTO TABLE gt_doc
+    INTO CORRESPONDING FIELDS OF TABLE gt_doc
     WHERE discno IN s_discno
       AND status IN s_stat
       AND refobjtype = 'INSTLN'.
+
+  " Tesisat numarasını bir kez hesapla; tesisat filtresine uymayanları
+  " sonraki SELECT'lerden önce ele (gereksiz veri okunmasın)
+  LOOP AT gt_doc ASSIGNING FIELD-SYMBOL(<ls_doc>).
+    <ls_doc>-anlage = |{ <ls_doc>-refobjkey ALPHA = IN }|.
+  ENDLOOP.
+  DELETE gt_doc WHERE anlage NOT IN s_anl.
 
   IF gt_doc IS INITIAL.
     MESSAGE 'Seçime uygun kesme belgesi bulunamadı' TYPE 'S' DISPLAY LIKE 'W'.
     LEAVE LIST-PROCESSING.
   ENDIF.
 
-  " Kesme tarihi için aktivite kayıtları
+  " Kesme tarihi için aktivite kayıtları; belge başına en son tarih
   " DOGRULA: EDISCACT-ACTDATE alan adı
+  DATA lt_act TYPE STANDARD TABLE OF ty_act WITH EMPTY KEY.
   SELECT discno actdate
     FROM ediscact
-    INTO TABLE gt_act
+    INTO TABLE lt_act
     FOR ALL ENTRIES IN gt_doc
     WHERE discno = gt_doc-discno.
-  SORT gt_act BY discno actdate DESCENDING.
+  SORT lt_act BY discno actdate DESCENDING.
+  DELETE ADJACENT DUPLICATES FROM lt_act COMPARING discno.
+  gt_act = lt_act.
 
   " Tesisatlara ait tüm sözleşmeler (silinme işaretlileri hariç)
-  DATA: lt_anl TYPE STANDARD TABLE OF ever-anlage,
-        lv_anl TYPE ever-anlage.
-  LOOP AT gt_doc INTO DATA(ls_doc).
-    lv_anl = |{ ls_doc-refobjkey ALPHA = IN }|.
-    IF lv_anl IN s_anl.
-      APPEND lv_anl TO lt_anl.
-    ENDIF.
-  ENDLOOP.
+  DATA lt_anl TYPE STANDARD TABLE OF ever-anlage WITH EMPTY KEY.
+  lt_anl = VALUE #( FOR ls IN gt_doc ( ls-anlage ) ).
   SORT lt_anl.
   DELETE ADJACENT DUPLICATES FROM lt_anl.
 
-  IF lt_anl IS NOT INITIAL.
-    SELECT vertrag anlage vkonto einzdat auszdat
-      FROM ever
-      INTO TABLE gt_ever
-      FOR ALL ENTRIES IN lt_anl
-      WHERE anlage = lt_anl-table_line
-        AND loevm  = space.
-    SORT gt_ever BY anlage einzdat vertrag.
-  ENDIF.
+  SELECT vertrag anlage vkonto einzdat auszdat
+    FROM ever
+    INTO TABLE gt_ever
+    FOR ALL ENTRIES IN lt_anl
+    WHERE anlage = lt_anl-table_line
+      AND loevm  = space.
 
-  " Sözleşme hesabı -> iş ortağı
+  " Sözleşme hesabı -> iş ortağı (tekil hesap listesiyle)
   IF gt_ever IS NOT INITIAL.
+    DATA lt_vkont TYPE STANDARD TABLE OF fkkvkp-vkont WITH EMPTY KEY.
+    lt_vkont = VALUE #( FOR ls IN gt_ever ( ls-vkonto ) ).
+    SORT lt_vkont.
+    DELETE ADJACENT DUPLICATES FROM lt_vkont.
+
     SELECT vkont gpart
       FROM fkkvkp
       INTO TABLE gt_vkp
-      FOR ALL ENTRIES IN gt_ever
-      WHERE vkont = gt_ever-vkonto.
+      FOR ALL ENTRIES IN lt_vkont
+      WHERE vkont = lt_vkont-table_line.
   ENDIF.
 ENDFORM.
 
@@ -179,12 +162,8 @@ FORM process_data.
     CLEAR gs_out.
     gs_out-discno = ls_doc-discno.
     gs_out-status = ls_doc-status.
-    lv_anl        = |{ ls_doc-refobjkey ALPHA = IN }|.
+    lv_anl        = ls_doc-anlage.
     gs_out-anlage = lv_anl.
-
-    IF lv_anl NOT IN s_anl.
-      CONTINUE.
-    ENDIF.
 
     " Kesme tarihi: en son aktivite tarihi, yoksa belge oluşturma tarihi
     READ TABLE gt_act INTO DATA(ls_act) WITH KEY discno = ls_doc-discno.
