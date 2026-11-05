@@ -127,7 +127,7 @@ FORM get_data.
 
   " Tesisatlara ait tüm sözleşmeler (silinme işaretlileri hariç)
   DATA lt_anl TYPE STANDARD TABLE OF ever-anlage WITH EMPTY KEY.
-  lt_anl = VALUE #( FOR ls IN gt_doc ( ls-anlage ) ).
+  lt_anl = VALUE #( FOR ls_d IN gt_doc ( ls_d-anlage ) ).
   SORT lt_anl.
   DELETE ADJACENT DUPLICATES FROM lt_anl.
 
@@ -141,7 +141,7 @@ FORM get_data.
   " Sözleşme hesabı -> iş ortağı (tekil hesap listesiyle)
   IF gt_ever IS NOT INITIAL.
     DATA lt_vkont TYPE STANDARD TABLE OF fkkvkp-vkont WITH EMPTY KEY.
-    lt_vkont = VALUE #( FOR ls IN gt_ever ( ls-vkonto ) ).
+    lt_vkont = VALUE #( FOR ls_e IN gt_ever ( ls_e-vkonto ) ).
     SORT lt_vkont.
     DELETE ADJACENT DUPLICATES FROM lt_vkont.
 
