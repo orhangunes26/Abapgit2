@@ -25,6 +25,7 @@ TABLES: ediscdoc, ever.
 TYPES: BEGIN OF ty_out,
          discno     TYPE ediscdoc-discno,
          status     TYPE ediscdoc-status,
+         refobjtype TYPE ediscdoc-refobjtype,
          anlage     TYPE ever-anlage,
          discdate   TYPE sy-datum,
          vertrag    TYPE ever-vertrag,      " kesme tarihindeki sözleşme
@@ -43,11 +44,18 @@ TYPES: BEGIN OF ty_out,
 
 TYPES: BEGIN OF ty_doc,
          discno    TYPE ediscdoc-discno,
-         status    TYPE ediscdoc-status,
-         refobjkey TYPE ediscdoc-refobjkey,
-         erdat     TYPE ediscdoc-erdat,
-         anlage    TYPE ever-anlage,        " ALPHA dönüşümü yapılmış tesisat
+         status     TYPE ediscdoc-status,
+         refobjtype TYPE ediscdoc-refobjtype,
+         refobjkey  TYPE ediscdoc-refobjkey,
+         erdat      TYPE ediscdoc-erdat,
+         anlage     TYPE ever-anlage,        " tesisat (INSTLN: anahtardan, ISUACCOUNT: sözleşme hesabından)
+         vkont      TYPE fkkvkp-vkont,       " ISUACCOUNT: anahtardaki sözleşme hesabı
+         gpart      TYPE fkkvkp-gpart,       " ISUACCOUNT: anahtardaki muhatap
        END OF ty_doc,
+       BEGIN OF ty_acc,
+         vkonto TYPE ever-vkonto,
+         anlage TYPE ever-anlage,
+       END OF ty_acc,
        BEGIN OF ty_act,
          discno  TYPE ediscact-discno,
          actdate TYPE ediscact-actdate,
@@ -71,7 +79,9 @@ DATA: gt_doc  TYPE STANDARD TABLE OF ty_doc,
       gt_out  TYPE STANDARD TABLE OF ty_out,
       gs_out  TYPE ty_out.
 
-CONSTANTS: gc_sonsuz TYPE sy-datum VALUE '99991231'.
+CONSTANTS: gc_sonsuz TYPE sy-datum VALUE '99991231',
+           gc_instln TYPE ediscdoc-refobjtype VALUE 'INSTLN',
+           gc_isuacct TYPE ediscdoc-refobjtype VALUE 'ISUACCOUNT'.
 
 *----------------------------------------------------------------------*
 * Seçim ekranı
@@ -92,20 +102,68 @@ START-OF-SELECTION.
 
 *&---------------------------------------------------------------------*
 FORM get_data.
-  " DOGRULA: Tesisat bilgisi EDISCDOC-REFOBJKEY'de (REFOBJTYPE = 'INSTLN')
-  "         tutuluyorsa aşağıdaki gibi; farklıysa EDISCOBJ üzerinden alın.
-  SELECT discno status refobjkey erdat
+  " Tüm referans tiplerini oku. REFOBJKEY içeriği tipe göre değişir:
+  "   INSTLN : tesisat numarası
+  "   ISUACCOUNT   : sözleşme hesabı (12) + muhatap (10) birleşik
+  " DOGRULA: ISUACCOUNT anahtarındaki sıra/uzunluk (VKONT 12 + GPART 10 varsayıldı)
+  SELECT discno status refobjtype refobjkey erdat
     FROM ediscdoc
     INTO CORRESPONDING FIELDS OF TABLE gt_doc
     WHERE discno IN s_discno
-      AND status IN s_stat
-      AND refobjtype = 'INSTLN'.
+      AND status IN s_stat.
 
-  " Tesisat numarasını bir kez hesapla; tesisat filtresine uymayanları
-  " sonraki SELECT'lerden önce ele (gereksiz veri okunmasın)
   LOOP AT gt_doc ASSIGNING FIELD-SYMBOL(<ls_doc>).
-    <ls_doc>-anlage = |{ <ls_doc>-refobjkey ALPHA = IN }|.
+    CASE <ls_doc>-refobjtype.
+      WHEN gc_instln.
+        <ls_doc>-anlage = |{ <ls_doc>-refobjkey ALPHA = IN }|.
+      WHEN gc_isuacct.
+        <ls_doc>-vkont = <ls_doc>-refobjkey(12).
+        <ls_doc>-gpart = <ls_doc>-refobjkey+12(10).
+    ENDCASE.
   ENDLOOP.
+
+  " ISUACCOUNT belgeleri: sözleşme hesabındaki sözleşmelerin tesisatlarına aç
+  DATA lt_acct_vk TYPE STANDARD TABLE OF fkkvkp-vkont WITH EMPTY KEY.
+  lt_acct_vk = VALUE #( FOR ls_dd IN gt_doc WHERE ( refobjtype = gc_isuacct ) ( ls_dd-vkont ) ).
+  SORT lt_acct_vk.
+  DELETE ADJACENT DUPLICATES FROM lt_acct_vk.
+
+  IF lt_acct_vk IS NOT INITIAL.
+    DATA: lt_acc_s TYPE STANDARD TABLE OF ty_acc WITH EMPTY KEY,
+          lt_acc   TYPE SORTED TABLE OF ty_acc WITH NON-UNIQUE KEY vkonto,
+          lt_new   LIKE gt_doc,
+          lv_any   TYPE abap_bool.
+
+    SELECT vkonto anlage
+      FROM ever
+      INTO TABLE lt_acc_s
+      FOR ALL ENTRIES IN lt_acct_vk
+      WHERE vkonto = lt_acct_vk-table_line
+        AND loevm  = space.
+    SORT lt_acc_s BY vkonto anlage.
+    DELETE ADJACENT DUPLICATES FROM lt_acc_s COMPARING vkonto anlage.
+    lt_acc = lt_acc_s.
+
+    LOOP AT gt_doc INTO DATA(ls_gd).
+      IF ls_gd-refobjtype <> gc_isuacct.
+        APPEND ls_gd TO lt_new.
+        CONTINUE.
+      ENDIF.
+      lv_any = abap_false.
+      LOOP AT lt_acc INTO DATA(ls_acc) WHERE vkonto = ls_gd-vkont.
+        ls_gd-anlage = ls_acc-anlage.
+        APPEND ls_gd TO lt_new.
+        lv_any = abap_true.
+      ENDLOOP.
+      IF lv_any = abap_false.
+        CLEAR ls_gd-anlage.
+        APPEND ls_gd TO lt_new.
+      ENDIF.
+    ENDLOOP.
+    gt_doc = lt_new.
+  ENDIF.
+
+  " Tesisat filtresine uymayanları sonraki SELECT'lerden önce ele
   DELETE gt_doc WHERE anlage NOT IN s_anl.
 
   IF gt_doc IS INITIAL.
@@ -127,16 +185,18 @@ FORM get_data.
 
   " Tesisatlara ait tüm sözleşmeler (silinme işaretlileri hariç)
   DATA lt_anl TYPE STANDARD TABLE OF ever-anlage WITH EMPTY KEY.
-  lt_anl = VALUE #( FOR ls_d IN gt_doc ( ls_d-anlage ) ).
+  lt_anl = VALUE #( FOR ls_d IN gt_doc WHERE ( anlage IS NOT INITIAL ) ( ls_d-anlage ) ).
   SORT lt_anl.
   DELETE ADJACENT DUPLICATES FROM lt_anl.
 
-  SELECT vertrag anlage vkonto einzdat auszdat
-    FROM ever
-    INTO TABLE gt_ever
-    FOR ALL ENTRIES IN lt_anl
-    WHERE anlage = lt_anl-table_line
-      AND loevm  = space.
+  IF lt_anl IS NOT INITIAL.
+    SELECT vertrag anlage vkonto einzdat auszdat
+      FROM ever
+      INTO TABLE gt_ever
+      FOR ALL ENTRIES IN lt_anl
+      WHERE anlage = lt_anl-table_line
+        AND loevm  = space.
+  ENDIF.
 
   " Sözleşme hesabı -> iş ortağı (tekil hesap listesiyle)
   IF gt_ever IS NOT INITIAL.
@@ -162,6 +222,7 @@ FORM process_data.
     CLEAR gs_out.
     gs_out-discno = ls_doc-discno.
     gs_out-status = ls_doc-status.
+    gs_out-refobjtype = ls_doc-refobjtype.
     lv_anl        = ls_doc-anlage.
     gs_out-anlage = lv_anl.
 
@@ -178,9 +239,23 @@ FORM process_data.
       CONTINUE.
     ENDIF.
 
+    " Desteklenmeyen referans tipi: tesisat çözülemez
+    IF ls_doc-refobjtype <> gc_instln AND ls_doc-refobjtype <> gc_isuacct.
+      gs_out-durum     = 'T'.
+      gs_out-durum_txt = 'Desteklenmeyen referans tipi'.
+      IF p_only = abap_false.
+        APPEND gs_out TO gt_out.
+      ENDIF.
+      CONTINUE.
+    ENDIF.
+
     " Kesme tarihinde geçerli sözleşme
+    " ISUACCOUNT belgelerinde yalnızca anahtardaki sözleşme hesabına ait sözleşme
     DATA(lv_found) = abap_false.
     LOOP AT gt_ever INTO DATA(ls_ever) WHERE anlage = lv_anl.
+      IF ls_doc-vkont IS NOT INITIAL AND ls_ever-vkonto <> ls_doc-vkont.
+        CONTINUE.
+      ENDIF.
       IF ls_ever-einzdat <= lv_date AND ls_ever-auszdat >= lv_date.
         lv_found       = abap_true.
         gs_out-vertrag = ls_ever-vertrag.
@@ -256,6 +331,7 @@ FORM show_alv.
       DATA(lo_cols) = lo_alv->get_columns( ).
       lo_cols->get_column( 'DISCNO'     )->set_long_text( 'Kesme belgesi' ).
       lo_cols->get_column( 'STATUS'     )->set_long_text( 'Kesme statüsü' ).
+      lo_cols->get_column( 'REFOBJTYPE' )->set_long_text( 'Referans tipi' ).
       lo_cols->get_column( 'ANLAGE'     )->set_long_text( 'Tesisat' ).
       lo_cols->get_column( 'DISCDATE'   )->set_long_text( 'Kesme tarihi' ).
       lo_cols->get_column( 'VERTRAG'    )->set_long_text( 'Eski sözleşme' ).
